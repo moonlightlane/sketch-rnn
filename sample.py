@@ -53,7 +53,7 @@ if sample_args.color_mode == 0:
 
 with open(os.path.join('save', sample_args.dataset_name, 'config.pkl')) as f: # future
   saved_args = cPickle.load(f)
-
+print saved_args
 model = Model(saved_args, True)
 sess = tf.InteractiveSession()
 saver = tf.train.Saver(tf.all_variables())

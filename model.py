@@ -1,6 +1,6 @@
 import tensorflow as tf
-from tensorflow.models.rnn import rnn_cell
-
+from tensorflow.python.ops import rnn_cell
+from tensorflow.python.ops import seq2seq
 import numpy as np
 import random
 
@@ -22,16 +22,17 @@ class Model():
 
     cell = cell_fn(args.rnn_size)
 
-    cell = rnn_cell.MultiRNNCell([cell] * args.num_layers)
+    self.cell = cell = rnn_cell.MultiRNNCell([cell] * args.num_layers)
 
     if (infer == False and args.keep_prob < 1): # training mode
       cell = rnn_cell.DropoutWrapper(cell, output_keep_prob = args.keep_prob)
 
-    self.cell = cell
-
     self.input_data = tf.placeholder(dtype=tf.float32, shape=[args.batch_size, args.seq_length, 5])
+    # self.input_data = tf.placeholder(tf.int32, [args.batch_size, args.seq_length])
     self.target_data = tf.placeholder(dtype=tf.float32, shape=[args.batch_size, args.seq_length, 5])
+    # self.targets = tf.placeholder(tf.int32, [args.batch_size, args.seq_length])
     self.initial_state = cell.zero_state(batch_size=args.batch_size, dtype=tf.float32)
+    # self.initial_state = cell.zero_state(args.batch_size, tf.float32)
 
     self.num_mixture = args.num_mixture
     NOUT = 3 + self.num_mixture * 6 # [end_of_stroke + end_of_char, continue_with_stroke] + prob + 2*(mu + sig) + corr
@@ -47,53 +48,60 @@ class Model():
     self.initial_input[:,4] = 1.0 # initially, the pen is down.
     self.initial_input = tf.constant(self.initial_input)
 
-    def tfrepeat(a, repeats):
-      num_row = a.get_shape()[0].value
-      num_col = a.get_shape()[1].value
-      assert(num_col == 1)
-      result = [a for i in range(repeats)]
-      result = tf.concat(0, result)
-      result = tf.reshape(result, [repeats, num_row])
-      result = tf.transpose(result)
-      return result
+    # def tfrepeat(a, repeats):
+    #   num_row = a.get_shape()[0].value
+    #   num_col = a.get_shape()[1].value
+    #   assert(num_col == 1)
+    #   result = [a for i in range(repeats)]
+    #   result = tf.concat(0, result)
+    #   result = tf.reshape(result, [repeats, num_row])
+    #   result = tf.transpose(result)
+    #   return result
 
-    def custom_rnn_autodecoder(decoder_inputs, initial_input, initial_state, cell, scope=None):
-      # customized rnn_decoder for the task of dealing with end of character
-      with tf.variable_scope(scope or "rnn_decoder"):
-        states = [initial_state]
-        outputs = []
-        prev = None
+    # def custom_rnn_autodecoder(decoder_inputs, initial_input, initial_state, cell, scope=None):
+    #   # customized rnn_decoder for the task of dealing with end of character
+    #   with tf.variable_scope(scope or "rnn_decoder"):
+    #     states = [initial_state]
+    #     outputs = []
+    #     prev = None
 
-        for i in xrange(len(decoder_inputs)):
-          inp = decoder_inputs[i]
-          if i > 0:
-            tf.get_variable_scope().reuse_variables()
-          output, new_state = cell(inp, states[-1])
+    #     for i in xrange(len(decoder_inputs)):
+    #       inp = decoder_inputs[i]
+    #       if i > 0:
+    #         tf.get_variable_scope().reuse_variables()
+    #       output, new_state = cell(inp, initial_state)# states[-1])
 
-          num_batches = self.args.batch_size # new_state.get_shape()[0].value
-          num_state = new_state.get_shape()[1].value
+    #       num_batches = self.args.batch_size # new_state.get_shape()[0].value
+    #       num_state = new_state.get_shape()[1].value
 
-          # if the input has an end-of-character signal, have to zero out the state
+    #       # if the input has an end-of-character signal, have to zero out the state
 
-          #to do:  test this code.
+    #       #to do:  test this code.
 
-          eoc_detection = inp[:,3]
-          eoc_detection = tf.reshape(eoc_detection, [num_batches, 1])
+    #       eoc_detection = inp[:,3]
+    #       eoc_detection = tf.reshape(eoc_detection, [num_batches, 1])
 
-          eoc_detection_state = tfrepeat(eoc_detection, num_state)
+    #       eoc_detection_state = tfrepeat(eoc_detection, num_state)
 
-          eoc_detection_state = tf.greater(eoc_detection_state, tf.zeros_like(eoc_detection_state, dtype=tf.float32))
+    #       eoc_detection_state = tf.greater(eoc_detection_state, tf.zeros_like(eoc_detection_state, dtype=tf.float32))
 
-          new_state = tf.select(eoc_detection_state, initial_state, new_state)
+    #       new_state = tf.select(eoc_detection_state, initial_state, new_state)
 
-          outputs.append(output)
-          states.append(new_state)
-      return outputs, states
+    #       outputs.append(output)
+    #       states.append(new_state)
+    #   return outputs, states
+    
+    # outputs, states = custom_rnn_autodecoder(inputs, self.initial_input, self.initial_state, cell, scope='rnn_mdn')
+    def loop(prev, _):
+      prev = tf.matmul(prev, output_w) + output_b
+      prev_symbol = tf.stop_gradient(tf.argmax(prev, 1))
+      return tf.nn.embedding_lookup(embedding, prev_symbol)
 
-    outputs, states = custom_rnn_autodecoder(inputs, self.initial_input, self.initial_state, cell, scope='rnn_mdn')
+    outputs, final_state = seq2seq.rnn_decoder(inputs, self.initial_state, cell, loop_function=loop if infer else None, scope='rnn_mdn')
     output = tf.reshape(tf.concat(1, outputs), [-1, args.rnn_size])
     output = tf.nn.xw_plus_b(output, output_w, output_b)
-    self.final_state = states[-1]
+    self.final_state = final_state
+    # self.final_state = states[-1]
 
     # reshape target data so that it is compatible with prediction shape
     flat_target_data = tf.reshape(self.target_data,[-1, 5])
